@@ -1,0 +1,9 @@
+---
+description: Project conventions for Harborline Dispatch
+alwaysApply: true
+---
+
+- Make small, focused diffs. Do not refactor unrelated code.
+- Follow existing patterns, naming, and validation in this repo.
+- Explain what you changed and why.
+- After a change, say how to verify it (test or manual check).

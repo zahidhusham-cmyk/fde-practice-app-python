@@ -1,0 +1,17 @@
+.venv
+venv
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.DS_Store
+*.log
+.env
+.env.local
+node_modules/
+dist/
+backend/harborline.db
+*.db
