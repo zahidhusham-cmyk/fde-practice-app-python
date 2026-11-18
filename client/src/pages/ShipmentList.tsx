@@ -20,6 +20,12 @@ function driverName(drivers: Driver[], driverId: string | null) {
   return drivers.find((driver) => driver.id === driverId)?.name ?? driverId;
 }
 
+function resultSummary(total: number, searching: boolean) {
+  const noun = total === 1 ? "shipment" : "shipments";
+  if (!searching) return `${total} ${noun} on the board`;
+  return total === 1 ? "1 shipment matches" : `${total} shipments match`;
+}
+
 function routeLabel(
   originCity: string,
   originState: string,
@@ -32,6 +38,7 @@ function routeLabel(
 export function ShipmentList() {
   const [searchParams, setSearchParams] = useSearchParams();
   const page = Math.max(1, Number(searchParams.get("page")) || 1);
+  const query = searchParams.get("q") ?? "";
   const [data, setData] = useState<ShipmentListResponse | null>(null);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -40,7 +47,7 @@ export function ShipmentList() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    Promise.all([fetchShipments(page, PAGE_SIZE), fetchDrivers()])
+    Promise.all([fetchShipments(page, PAGE_SIZE, query), fetchDrivers()])
       .then(([shipmentPage, driverList]) => {
         if (cancelled) return;
         setData(shipmentPage);
@@ -56,10 +63,20 @@ export function ShipmentList() {
     return () => {
       cancelled = true;
     };
-  }, [page]);
+  }, [page, query]);
+
+  function listParams(nextPage: number, nextQuery: string) {
+    const params: Record<string, string> = { page: String(nextPage) };
+    if (nextQuery) params.q = nextQuery;
+    return params;
+  }
 
   function goToPage(next: number) {
-    setSearchParams({ page: String(next) });
+    setSearchParams(listParams(next, query));
+  }
+
+  function onSearch(nextQuery: string) {
+    setSearchParams(listParams(1, nextQuery));
   }
 
   return (
@@ -69,9 +86,23 @@ export function ShipmentList() {
           <h1>Shipments</h1>
           <p className="muted">
             {data
-              ? `${data.pagination.total} shipments on the board`
+              ? resultSummary(data.pagination.total, Boolean(query.trim()))
               : "Active freight for Harborline Dispatch"}
           </p>
+        </div>
+        <div className="header-actions">
+          <Link to="/shipments/new" className="button">
+            Book shipment
+          </Link>
+          <label className="search-field">
+            Search
+            <input
+              type="search"
+              value={query}
+              placeholder="Customer, city, or ID"
+              onChange={(event) => onSearch(event.target.value)}
+            />
+          </label>
         </div>
       </div>
 
@@ -97,7 +128,9 @@ export function ShipmentList() {
                 {data.shipments.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="empty">
-                      No shipments on this page.
+                      {query.trim()
+                        ? `No shipments match “${query.trim()}”.`
+                        : "No shipments on this page."}
                     </td>
                   </tr>
                 ) : (
