@@ -27,6 +27,57 @@ def test_honors_a_custom_page_size(client: TestClient) -> None:
     assert body["pagination"]["total_pages"] == 6
 
 
+def test_search_matches_customer_case_insensitively(client: TestClient) -> None:
+    response = client.get("/api/shipments", params={"q": "bRiGhTlEaF"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["id"] for item in body["shipments"]] == ["HL-4412"]
+    assert body["shipments"][0]["customer"] == "Brightleaf Market"
+    assert body["pagination"]["total"] == 1
+    assert body["pagination"]["total"] < 28
+    assert body["pagination"]["total_pages"] == 1
+
+
+def test_search_matches_a_city_before_pagination(client: TestClient) -> None:
+    response = client.get("/api/shipments", params={"q": "philadelphia", "limit": 2})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["shipments"]) == 2
+    assert body["pagination"]["total"] > 2
+    assert body["pagination"]["total"] < 28
+    assert body["pagination"]["total_pages"] == (body["pagination"]["total"] + 1) // 2
+    assert all(
+        "philadelphia" in f"{item['origin_city']} {item['destination_city']}".lower()
+        for item in body["shipments"]
+    )
+
+
+def test_search_with_no_matches_returns_an_empty_page(client: TestClient) -> None:
+    response = client.get("/api/shipments", params={"q": "zzzz-not-a-shipment"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["shipments"] == []
+    assert body["pagination"]["total"] == 0
+    assert body["pagination"]["total_pages"] == 1
+
+
+def test_search_treats_sql_injection_as_plain_text(client: TestClient) -> None:
+    payload = "' OR 1=1; DROP TABLE shipments; --"
+    response = client.get("/api/shipments", params={"q": payload})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["shipments"] == []
+    assert body["pagination"]["total"] == 0
+
+    follow_up = client.get("/api/shipments")
+    assert follow_up.status_code == 200
+    assert follow_up.json()["pagination"]["total"] == 28
+
+
 def test_page_1_includes_the_earliest_shipments_in_default_order(client: TestClient) -> None:
     response = client.get("/api/shipments?page=1&limit=10")
 
@@ -125,8 +176,76 @@ def test_delayed_shipment_can_return_to_in_transit(client: TestClient) -> None:
 
 
 def test_out_for_delivery_can_transition_to_delivered(client: TestClient) -> None:
+    before = client.get("/api/shipments/HL-4412")
+    assert before.status_code == 200
+    assert before.json()["status"] == "out_for_delivery"
+    event_count = len(before.json()["events"])
+
     response = client.patch("/api/shipments/HL-4412", json={"status": "delivered"})
 
     assert response.status_code == 200
-    assert response.json()["status"] == "delivered"
-    assert response.json()["id"] == "HL-4412"
+    body = response.json()
+    assert body["id"] == "HL-4412"
+    assert body["status"] == "delivered"
+    assert len(body["events"]) == event_count + 1
+    assert body["events"][-1]["message"] == "Status updated to delivered."
+
+    persisted = client.get("/api/shipments/HL-4412")
+    assert persisted.status_code == 200
+    assert persisted.json()["status"] == "delivered"
+
+
+def _new_shipment(**overrides: object) -> dict:
+    body = {
+        "customer": "Northwind Provisions",
+        "origin_city": "Boston",
+        "origin_state": "ma",
+        "destination_city": "Albany",
+        "destination_state": "NY",
+        "service_level": "expedited",
+        "promised_on": "2026-11-25",
+        "weight_lb": 300,
+        "pieces": 4,
+        "notes": "  Dock opens at 7.  ",
+    }
+    body.update(overrides)
+    return body
+
+
+def test_books_a_shipment_and_assigns_the_next_id(client: TestClient) -> None:
+    first = client.post("/api/shipments", json=_new_shipment())
+
+    assert first.status_code == 201
+    body = first.json()
+    assert body["id"] == "HL-4429"
+    assert body["status"] == "booked"
+    assert body["customer"] == "Northwind Provisions"
+    assert body["origin_state"] == "MA"
+    assert body["notes"] == "Dock opens at 7."
+    assert body["driver_id"] is None
+    assert body["events"] == [
+        {
+            "id": body["events"][0]["id"],
+            "timestamp": body["events"][0]["timestamp"],
+            "location": "Boston, MA",
+            "message": "Shipment booked.",
+        }
+    ]
+
+    second = client.post("/api/shipments", json=_new_shipment(customer="Second Load"))
+    assert second.status_code == 201
+    assert second.json()["id"] == "HL-4430"
+
+
+def test_rejects_an_unknown_driver_when_booking(client: TestClient) -> None:
+    response = client.post("/api/shipments", json=_new_shipment(driver_id="drv-nobody"))
+
+    assert response.status_code == 400
+    assert "driver_id" in response.json()["detail"]
+
+
+def test_rejects_a_non_positive_weight_when_booking(client: TestClient) -> None:
+    response = client.post("/api/shipments", json=_new_shipment(weight_lb=0))
+
+    assert response.status_code == 422
+

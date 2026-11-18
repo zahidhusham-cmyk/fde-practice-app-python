@@ -6,14 +6,14 @@ from app.exceptions import ShipmentNotFound, ShipmentValidationError
 from app.models import Shipment, ShipmentEvent
 from app.repositories.drivers import DriverRepository
 from app.repositories.shipments import ShipmentRepository
-from app.schemas import ShipmentUpdate
+from app.schemas import ShipmentCreate, ShipmentStatus, ShipmentUpdate
 
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "booked": {"at_origin", "cancelled"},
     "at_origin": {"in_transit", "cancelled"},
     "in_transit": {"at_hub", "out_for_delivery", "delayed"},
     "at_hub": {"out_for_delivery", "delayed"},
-    "out_for_delivery": {"delayed", "cancelled"},
+    "out_for_delivery": {"delivered", "delayed", "cancelled"},
     "delayed": {"in_transit", "at_hub", "out_for_delivery", "cancelled"},
     "delivered": set(),
     "cancelled": set(),
@@ -26,15 +26,52 @@ class ShipmentService:
         self.repo = ShipmentRepository(db)
         self.drivers = DriverRepository(db)
 
-    def list_shipments(self, *, page: int, limit: int) -> tuple[list[Shipment], int]:
+    def list_shipments(
+        self, *, page: int, limit: int, query: str | None = None
+    ) -> tuple[list[Shipment], int]:
         offset = (page - 1) * limit
-        return self.repo.list(offset=offset, limit=limit)
+        return self.repo.list(offset=offset, limit=limit, query=query)
 
     def get_shipment(self, shipment_id: str) -> Shipment:
         shipment = self.repo.get(shipment_id)
         if shipment is None:
             raise ShipmentNotFound()
         return shipment
+
+    def create_shipment(self, payload: ShipmentCreate) -> Shipment:
+        if payload.driver_id is not None and self.drivers.get(payload.driver_id) is None:
+            raise ShipmentValidationError("driver_id must be a valid driver id or null")
+
+        now = _utcnow()
+        shipment = Shipment(
+            id=self.repo.next_id(),
+            customer=payload.customer,
+            origin_city=payload.origin_city,
+            origin_state=payload.origin_state,
+            destination_city=payload.destination_city,
+            destination_state=payload.destination_state,
+            status=ShipmentStatus.booked.value,
+            service_level=payload.service_level.value,
+            promised_on=payload.promised_on,
+            weight_lb=payload.weight_lb,
+            pieces=payload.pieces,
+            driver_id=payload.driver_id,
+            notes=payload.notes,
+            created_at=now,
+            updated_at=now,
+            events=[
+                ShipmentEvent(
+                    timestamp=now,
+                    location=f"{payload.origin_city}, {payload.origin_state}",
+                    message="Shipment booked.",
+                )
+            ],
+        )
+        saved = self.repo.save(shipment)
+        created = self.repo.get(saved.id)
+        if created is None:
+            raise ShipmentNotFound()
+        return created
 
     def update_shipment(self, shipment_id: str, patch: ShipmentUpdate) -> Shipment:
         shipment = self.get_shipment(shipment_id)

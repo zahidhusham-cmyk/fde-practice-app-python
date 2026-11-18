@@ -23,6 +23,7 @@ test:
 		exit 1; \
 	fi
 	$(BIN)/pytest
+	cd client && npm test
 
 lint:
 	@if [ ! -x "$(BIN)/ruff" ]; then \
